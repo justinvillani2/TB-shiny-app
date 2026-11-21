@@ -1,0 +1,390 @@
+---
+title: "Homework 3"
+author: "Due date: 11/20/26"
+output:
+  html_document:
+    code_folding: show
+    toc: true
+    toc_float: true
+    theme: "flatly"
+editor_options:
+  chunk_output_type: console
+---
+
+### Scoring (100 pts total)
+
+* **Completion (50 pts):** the point values listed with each task below are awarded for completing that task.
+* **Detailed grading (50 pts):** a subset of problems will be selected and graded in detail. These 50 points are divided among the selected problems in proportion to their point values.
+
+### Use of AI Tools
+
+You may use AI tools (e.g., ChatGPT, Claude, Copilot, Gemini) on this assignment, but you must document how you used them. As you work, keep brief notes on which tools you used, what tasks you used them for, and the general way you prompted them — you will need these for the **AI Use Statement** at the end of the assignment. The AI Use Statement is required but not scored; **submissions without it will not be accepted.** Honest disclosure will not lower your grade, and you remain responsible for the correctness of everything you submit.
+
+### The TB NanoString data
+
+In this assignment you will apply unsupervised learning to the TB NanoString data: blood expression of 107 TB-related genes in 179 people with active tuberculosis (TB) or latent TB infection (LTBI) (Kaipilyawar et al., *Clin Infect Dis*, 2022). The first column, `TB_Status`, is the TB status; the remaining columns are gene expression values. You will then build a Shiny app that does dimension reduction and k-means clustering on these data.
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+TBnanostring <- readRDS("TBnanostring.rds")
+dim(TBnanostring)
+table(TBnanostring$TB_Status)
+
+x <- as.matrix(TBnanostring[, -1]) # Remove TB-Status -> numeric gene matrix
+y <- TBnanostring$TB_Status       # labels for coloring/checking status
+```
+
+You will need the `umap` (or `uwot`), `NMF`, `cluster`, `mclust`, and `shiny` packages.
+
+### Question 1. Principal Component Analysis (20 pts)
+
+#### Task 1.1: Fit PCA and plot the variance explained (5 pts)
+
+Run PCA on the gene expression columns (`prcomp`). Make a scree plot of the proportion of variance explained by each PC, and report the variance explained by PC1, PC2, and the first 10 PCs together.
+
+```{r pca-fit}
+pca <- prcomp(x)                       # rotate/load genes into PCs
+pve <- pca$sdev^2 / sum(pca$sdev^2)    # Var. share of each PC
+plot(pve, type = "b", xlab = "PC", ylab = "Proportion of variance")# "b" --> draw both points & lines
+pve[1]; pve[2]; sum(pve[1:10])         # First 10 PCs
+
+# PC1 (46.8% total var); PC2 (7.3% total var); PC1 - PC10 (capture 76.2% total var)
+```
+
+#### Task 1.2: PCA plot (5 pts)
+
+Make a `ggplot2` scatterplot of PC1 vs. PC2 with points colored by `TB_Status`. Do TB and LTBI separate? Try one other pair of PCs (e.g., PC1 vs. PC3): does it separate the groups better?
+
+Group separation is about the same between PC1 and PC2 loadings and PC1 and PC3 loadings. Both show minimal overlap. 
+
+```{r pca-plot}
+pc_df <- data.frame(pca$x[, 1:3], TB_Status = y)
+
+ggplot(pc_df, aes(PC1, PC2, fill = TB_Status)) + 
+  geom_point(cex = 3, pch = 21) + coord_fixed()
+
+ggplot(pc_df, aes(PC1, PC3, fill = TB_Status)) +
+  geom_point(cex = 3, pch = 21) + coord_fixed()
+
+#   tapply(pc_df$PC1, pc_df$TB_Status, mean)
+#         TB      LTBI 
+# -6.063178  4.789911 
+```
+
+#### Task 1.3: Loadings (5 pts)
+
+Which 10 genes have the largest absolute loadings on PC1? Is PC1 related to TB status? (Hint: compare PC1 scores between the two groups with a boxplot or a t-test.)
+
+```{r pca-loadings}
+load1 <- pca$rotation[, "PC1"]                          # load PC1
+head(load1[order(abs(load1), decreasing = TRUE)], 10) # Top 10 by |PC Loading| 
+
+ggplot(pc_df, aes(TB_Status, PC1, fill = TB_Status)) + geom_boxplot()
+t.test(PC1 ~ TB_Status, data = pc_df)
+```
+a) Top 10 genes with largest PC1 loadings?
+      TBP      LUC7L      CIRBP       MDN1     ZNF202      DARS2   CXorf40B      BATF2     ATP1A1      EXOC2 
+ 0.1334118  0.1328856  0.1316027  0.1304627  0.1293262  0.1289530  0.1283000 -0.1275347  0.1271395 0.1266948 
+ Since the loadings are similiar in size for PC1, the genes contribute similiarly Therefore, PC1 is not driven by a few genes and likley the genes work are co-expressed. Secondly, the only gene with a negative loading was 'BATF2,' therefore, PC1 contrasts 'BATF2' expression with other genes. In other words, those with high 'BATF2' expression tend to have lower expression of the others, and vice-versa.
+
+b) Is PC1 related to TB status?
+
+Yes, PC1 is strongly related to TB status. For example, in the boxplot, there is minimal overlap - TB samples have mostly negative PC1 scores (mean ~ -6.06) & LTBI scores have mostly positive scores (mean ~ 4.79). The Welch two-sample t-test confirms the difference is highly significant (t = -14.83, df ~ 119, p < 2.2e-16; 95% C.I. for the difference in means: -12.3 to -9.4 ). This matches the loadings: BATF2, an immune “alarm” gene that is high in active TB, pushes TB patients toward one side of PC1. PCA never saw the TB labels, yet the biggest difference it found between people was TB status, so TB is the main thing driving variation in these genes. TB patients are also more spread out on PC1 than LTBI patients, likely because active TB patients vary more in how sick they are and how strongly their immune system is responding. 
+
+#### Task 1.4: To scale or not to scale (5 pts)
+
+Repeat the PCA with `scale. = TRUE`. How do the variance explained and the PC1 vs. PC2 plot change? Which version would you use for these data, and why?
+
+```{r pca-scaled} 
+pca_s <- prcomp(x, scale. = TRUE) # now, we divide each gene by its SD (rescaled to SD 1)
+pve_s <- pca_s$sdev^2 / sum(pca_s$sdev^2) 
+pve_s[1]; pve_s[2]; sum(pve_s[1:10])
+
+data.frame(pca_s$x[, 1:2], TB_Status = y) %>%
+  ggplot(aes(PC1, PC2, fill = TB_Status)) + 
+  geom_point(cex = 3, pch = 21) + coord_fixed()
+
+summary(apply(x,2, sd))           # SD of each gene
+
+```
+a) The variance and the PC1 & PC2 plot don't change [see console output below]
+
+ rbind(unscaled = c(PC1 = pve[1],   PC2 = pve[2],   PC1_10 = sum(pve[1:10])),
+       scaled   = c(PC1 = pve_s[1], PC2 = pve_s[2], PC1_10 = sum(pve_s[1:10])))
+       
+               PC1        PC2    PC1_10
+unscaled 0.4682617 0.07289054 0.7623148
+scaled   0.4682617 0.07289054 0.7623148
+Identical variances 
+
+all.equal(pca$sdev, pca_s$sdev)
+[1] TRUE
+All 107 PC variances are identical, not just the first few. 
+
+cor(pca$x[, 1], pca_s$x[, 1])
+[1] 1
+IDENTICAL PC1 scores 
+
+range(apply(x, 2, sd))
+[1] 1 1
+range(colMeans(x))
+[1] -1.929187e-15  3.039581e-15
+Every gene already has roughly a mean of 0 and SD 1. 
+
+b) Which Version, and why? 
+
+For these data it makes no difference, because the scaling decision was already made when the data were prepared. In general, scaling matters when genes have very different variances: when I multiplied 'BATF2' by 10, its PC1 loading jumped from 0.13 to ~1.0 without scaling but returned to 0.13 with scaling. For raw expression data on a common scale, I’d consider unscaled PCA so high-variance (often biologically active) genes lead, but I’d scale if features were in different units or a few noisy genes dominated.
+### Question 2. UMAP (15 pts)
+
+#### Task 2.1: UMAP plot (5 pts)
+
+Apply UMAP to the gene expression data (set a seed!) and plot the two UMAP dimensions colored by `TB_Status`.
+
+```{r umap-fit}
+library(uwot)
+set.seed(1) 
+um <- umap(x, n_neighbors = 15)
+
+data.frame(um, TB_Status = y) %>%
+  ggplot(aes(X1, X2, fill = TB_Status)) + 
+  geom_point(cex = 3, pch = 21)
+
+```
+
+#### Task 2.2: Tuning parameters (5 pts)
+
+Rerun UMAP with `n_neighbors` = 5, 15, and 50 (and, optionally, two different seeds). Show the plots side by side. How much do the pictures change?
+
+```{r umap-tune}
+umap_nn <- lapply(c(5, 15, 50), function(k) {
+  set.seed(1)
+  data.frame(umap(x, n_neighbors = k), TB_Status = y, n_neighbors = k)})
+
+bind_rows(umap_nn) %>%
+  ggplot(aes(X1, X2, fill = TB_Status)) +
+  geom_point(cex = 2, pch = 21) +
+  facet_wrap(~ n_neighbors, scales = "free")
+```
+
+#### Task 2.3: PCA vs. UMAP (5 pts)
+
+Compare your PCA and UMAP plots. Which separates TB from LTBI more clearly? What can and can't you conclude from distances between points or clusters in a UMAP plot?
+
+a) The shape, orientation, and number of clumps vary. PCA shows one continuous cloud, with TB on the left and LTBI on the right of PC1. UMAP’s picture depends on n_neighbors: at n = 5 the data fragment into small islands, and as n increases they merge into one continuous band. The orientation also changes between UMAP runs (TB upper left at n = 5, lower right at n = 15, bottom left at n = 50), while PCA’s layout is fixed. The islands disappear as n increases (a more global view), so they are likely artifacts of the small n rather than real subgroups.
+
+b) Both separate TB and LTBI about equally: they show the same pattern, and neither removes the overlap. UMAP can make the groups look more distinct, but the picture depends on n_neighbors and the seed: a small n emphasizes local detail and fragments the data, while a large n emphasizes global structure and can blur fine detail. PCA’s result is fixed and interpretable (PC1 is tied to specific genes), so its separation is more trustworthy.
+
+c) UMAP preserves local neighborhoods, so patients that are close together have similar expression profiles. However, distances between clusters, the size or spread of clusters, the empty space between them, and the axes themselves have no reliable meaning in UMAP. In PCA, distances approximate real Euclidean distances (PC1 and PC2 capture ~54% of the variance), so PCA is better for judging how different groups are.UMAP preserves local neighbors, so it is better at informing similarity between groups or patients. In other words for UMAP, nearby patients have similar expression profiles. PCA, uses real Euclidean distances, so PCA is better at judging how different groups are. 
+
+
+### Question 3. Non-negative Matrix Factorization (15 pts)
+
+#### Task 3.1: Prepare the data (3 pts)
+
+NMF requires non-negative data, but these expression values are centered (some are negative). Shift each gene so its minimum is 0 (subtract each column's minimum). Confirm that the shifted matrix has no negative values.
+
+```{r nmf-prep}
+x_nn <- sweep(x, 2, apply(x,2,min))
+min(x_nn)
+sum(x_nn <0)
+
+```
+
+#### Task 3.2: Fit NMF (7 pts)
+
+Fit NMF with rank $K = 2$ (use `nrun` of at least 10 and set a seed). Plot the two columns of the basis matrix $\mathbf{W}$ (`basis()`) against each other, colored by `TB_Status`.
+
+```{r nmf-fit}
+library(tidyverse)
+library(NMF)
+set.seed(42)
+nmf_res <- nmf(x_nn, 2, nrun = 10)
+W <- basis(nmf_res); colnames(W) <- c("NMF1","NMF2")
+
+data.frame(W, TB_Status = y)%>%
+  ggplot(aes(NMF1, NMF2, fill = TB_Status)) + 
+  geom_point(cex = 3, pch = 21)
+```
+
+#### Task 3.3: Interpret the components (5 pts)
+
+Using the coefficient matrix $\mathbf{H}$ (`coef()`), list the 10 genes that load most heavily on each component. Does either component line up with TB status? How does the NMF picture compare with PCA?
+
+```{r nmf-interpret}
+top_genes <- apply(H, 1, function(h) names(sort(h, decreasing = TRUE))[1:10])
+colnames(top_genes) <- c("NMF1", "NMF2"); top_genes
+```
+ TOP 10 Genes
+   NMF1       NMF2      
+ [1,] "DARS2"    "IFI44L"  
+ [2,] "ATP1A1"   "GBP2"    
+ [3,] "UCP2"     "SECTM1"  
+ [4,] "CIRBP"    "IFITM3"  
+ [5,] "SND1"     "GBP4"    
+ [6,] "GUSB"     "FCGR1B"  
+ [7,] "MAP7D3"   "STAT1"   
+ [8,] "KIAA0090" "FCGR1C"  
+ [9,] "KIAA0100" "SERPING1"
+[10,] "MDN1"     "SCARF1"  
+[t = 14.73, df = 122.15, p-value < 2.2e-16 (statistically significant)]
+
+NMF2 (interferon genes) is higher in TB (t=14.7, p-value < 2.2e-16), while NMF1 genes is higher in LTBI (t=-14.5, p-value < 2.2e-16 ). 
+
+PCA showed this contrast on 1 axis +/- loadings; NMF splits into 2 additive, more interpretable signatures. 
+
+
+### Question 4. K-means Clustering (10 pts)
+
+#### Task 4.1: Choose k (4 pts)
+
+Run k-means (`nstart = 25`) on the first 10 PCs from Question 1 for $k = 1, \ldots, 10$. Make an elbow plot and a mean silhouette plot (`cluster::silhouette`). Which $k$ would you choose?
+
+```{r kmeans-k}
+library(cluster)
+pcs10 <- pca$x[, 1:10]                       # first 10 PC scores
+
+set.seed(1)
+wcss <- sapply(1:10, function(k) kmeans(pcs10, k, nstart = 25)$tot.withinss)
+sil  <- sapply(2:10, function(k)
+  mean(silhouette(kmeans(pcs10, k, nstart = 25)$cluster, dist(pcs10))[, 3]))
+
+par(mfrow = c(1, 2))
+plot(1:10, wcss, type = "b", xlab = "k", main = "Elbow (WCSS)")
+plot(2:10, sil,  type = "b", xlab = "k", main = "Mean silhouette")
+par(mfrow = c(1, 1))
+```
+I would choose k = 2, which matches the two TB groups. The elbow (WCSS) plot shows a large decrease from k = 1 to k = 2 and only small decreases after, and the mean silhouette is highest at k = 2 (~0.39), dropping sharply to ~0.25 at k = 3. A silhouette of 0.39 indicates moderate separation, consistent with the TB/LTBI overlap seen in PCA and UMAP.
+
+#### Task 4.2: Clusters vs. TB status (6 pts)
+
+Run k-means with $k = 2$ on (a) all 107 genes, (b) the first 10 PCs, and (c) the 2 UMAP dimensions. For each, cross-tabulate the clusters with `TB_Status` and compute the adjusted Rand index (`mclust::adjustedRandIndex`). Which representation gives clusters closest to TB status? Does that mean it is the "best" representation? Explain.
+
+```{r kmeans-compare}
+set.seed(1)
+km_genes <- kmeans(x,     2, nstart = 25)$cluster   # (a) all 107 genes
+km_pcs   <- kmeans(pcs10, 2, nstart = 25)$cluster   # (b) first 10 PCs
+km_umap  <- kmeans(um,    2, nstart = 25)$cluster   # (c) 2 UMAP dims
+
+table(cluster = km_genes, TB = y)
+table(cluster = km_pcs,   TB = y)
+table(cluster = km_umap,  TB = y)
+
+sapply(list(genes = km_genes, PCs = km_pcs, UMAP = km_umap),
+       mclust::adjustedRandIndex, y)
+```
+Genes and the first 10 PCs gave identical clusters (ARI = 0.566), while UMAP was only slightly closer to TB status (ARI = 0.583, a difference of one person out of 179). This doesn’t make UMAP the “best” representation, because the gap is tiny, UMAP depends on its settings and seed, and k-means is unsupervised, so a higher ARI only means the strongest structure happens to match TB status.
+
+### Question 5. A Shiny App for Dimension Reduction and K-means (40 pts)
+
+#### Task 5.1: Walk through the k-means Shiny tutorial (10 pts)
+
+Work step by step through the k-means Shiny app tutorial, `lectures/week4/shiny_kmeans_app.html` (Steps 00-09). Run the code to launch the app at each step. For each step, briefly document what changed: which functions were added and what they do in the app.
+
+*Your answer here.*
+
+#### Task 5.2: Add dimension reduction and k-means on the TB data (25 pts)
+
+Modify the final tutorial app so that it works on the TB NanoString data:
+
+1. **Dimension reduction input:** a menu to choose the method: PCA, UMAP, or NMF (rank 2).
+2. **Clustering input:** the number of clusters $k$ (as in the tutorial).
+3. **Plot:** the two reduced dimensions, with points **colored by k-means cluster** and **shaped by TB status**; include the cluster centers.
+4. **Table:** a cross-tabulation of clusters vs. TB status, and the adjusted Rand index.
+
+Tips: compute the dimension reductions once, outside the `server` function or in a `reactive()`, so the app doesn't recompute UMAP or NMF every time $k$ changes. Run k-means on the two reduced dimensions.
+
+Include your app code below (with `eval=FALSE`) and save it as `app.R`.
+
+```{r shiny-app, eval=FALSE}
+library(shiny); library(uwot); library(NMF); library(mclust)
+
+# Data + dimension reductions 
+TB <- readRDS("TBnanostring.rds")
+x  <- as.matrix(TB[, -1])
+y  <- TB$TB_Status
+
+set.seed(1); um <- umap(x, n_neighbors = 15)
+set.seed(1); W  <- basis(nmf(sweep(x, 2, apply(x, 2, min)), 2, nrun = 10))
+red <- list(PCA = prcomp(x)$x[, 1:2], UMAP = um, NMF = W)
+
+
+ui <- fluidPage(
+  titlePanel("TB NanoString: dimension reduction + k-means"),
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("method", "Dimension reduction", c("PCA", "UMAP", "NMF")),
+      numericInput("clusters", "Cluster count", 2, min = 1, max = 9)),
+    mainPanel(
+      plotOutput("plot1"),
+      tableOutput("tab"),
+      textOutput("ari"))))
+
+
+server <- function(input, output, session) {
+
+  selectedData <- reactive({
+    red[[input$method]]})
+
+  clusters <- reactive({
+    set.seed(1)
+    kmeans(selectedData(), input$clusters, nstart = 25)})
+
+  output$plot1 <- renderPlot({
+    palette(c("#E41A1C", "#377EB8", "#4DAF4A", "#984EA3",
+              "#FF7F00", "#FFFF33", "#A65628", "#F781BF", "#999999"))
+    plot(selectedData(), col = clusters()$cluster, pch = c(16, 17)[y], cex = 2,
+         xlab = paste(input$method, 1), ylab = paste(input$method, 2))
+    points(clusters()$centers, pch = 4, cex = 4, lwd = 4)
+    legend("topright", legend = levels(y), pch = c(16, 17))})
+
+  output$tab <- renderTable({
+    as.data.frame.matrix(table(cluster = clusters()$cluster, TB = y))}, 
+    rownames = TRUE)
+
+  output$ari <- renderText({
+    paste("Adjusted Rand index:",
+          round(adjustedRandIndex(clusters()$cluster, y), 3))})}
+
+shinyApp(ui = ui, server = server)
+```
+
+**Screenshots (required):** we will grade your app from screenshots, not by running it. Take **three** screenshots of your running app, one each for PCA, UMAP, and NMF, each showing the plot and the cluster vs. TB status table. Save them in your homework folder and embed them in this report, for example:
+
+```{r screenshots, eval=FALSE}
+knitr::include_graphics(c("final_PCA.png", "final_UMAP.png", "final_NMF.png"))
+```
+
+Below the screenshots, briefly describe what you see for each method.
+
+*PCA*: k-means splits the points along PCA 1 into a TB cluster (left) and an LTBI cluster (right), with the cluster centers on either side of 0. Misclassified points sit in the overlap zone near the boundary. This is close to the Q4 result, though the app clusters on only 2 PCs instead of 10.
+
+*UMAP*: The two clusters correspond to the two UMAP groups: LTBI on the left and TB on the right. Most mismatches (TB circles in the LTBI cluster) lie in the middle region where the groups meet. The table (63/5, 16/95) and ARI (0.583) match Q4, slightly the highest of the three.
+
+*NMF*: Points lie along a diagonal (NMF1 vs. NMF2 trade off), and k-means splits that line into a high-NMF2 TB cluster and a high-NMF1 LTBI cluster. The table (60 TB / 4 LTBI; 19 TB / 96 LTBI) and ARI (0.549) are slightly lower than PCA and UMAP, but similar overall.
+
+*Overall*: All three methods give similar agreement with TB status (ARI ≈ 0.55–0.58), with about 19 TB patients consistently grouped with LTBI, the same overlap seen throughout the homework.
+
+#### Task 5.3: Post your app on GitHub (5 pts)
+
+Create a GitHub repository containing your `app.R`, the data file it needs, and a short `README.md` explaining how to run the app. Add a hyperlink to your repository here.
+
+*Your link here.*
+
+(Later in the course we will add machine learning models to this app.)
+
+### Deliverables
+
+Submit:
+
+* Completed `.Rmd` file and rendered HTML report
+* All code blocks filled in (`# TODO` replaced)
+* Written answers for the interpretation tasks
+* Three screenshots of your running Shiny app (PCA, UMAP, NMF) embedded in the report
+* A link to your app's GitHub repository
+* The AI Use Statement below
+
+### AI Use Statement (required — not scored, but submissions without it will not be accepted)
+
+Describe in detail how you used AI tools on this assignment. If you did not use any, state that explicitly. Please include the tools you used, the tasks you used them for, and the general way you prompted them.
+
+*Your answer here.*
